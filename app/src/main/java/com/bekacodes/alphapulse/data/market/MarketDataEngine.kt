@@ -109,31 +109,31 @@ class MarketDataEngine {
     }
 
     fun getCuratedNews(activeSymbols: Set<String>): List<NewsArticleUiModel> {
-        val allNews = listOf(
+        val baseNews = listOf(
             NewsArticleUiModel(
                 id = "news_sndk",
-                source = "Reuters",
+                source = "Yahoo Finance",
                 publishedAgo = "2h ago",
                 title = "Enterprise NAND & HBM Demand Lifts Q4 Semiconductor Storage Guidance",
-                url = "https://www.reuters.com/technology/",
+                url = "https://finance.yahoo.com/quote/SNDK/",
                 relatedSymbol = "SNDK",
                 symbolChangePercent = 6.07
             ),
             NewsArticleUiModel(
                 id = "news_mu",
-                source = "CNBC",
+                source = "Yahoo Finance",
                 publishedAgo = "4h ago",
                 title = "High-Bandwidth Memory HBM3E Supply Sold Out Through Next Calendar Year",
-                url = "https://www.cnbc.com/semiconductors/",
+                url = "https://finance.yahoo.com/quote/MU/",
                 relatedSymbol = "MU",
                 symbolChangePercent = 14.74
             ),
             NewsArticleUiModel(
                 id = "news_rklb",
-                source = "SpaceNews",
+                source = "Yahoo Finance",
                 publishedAgo = "6h ago",
                 title = "Rocket Lab Accelerates Electron Launch Cadence and Neutron Pad Testing",
-                url = "https://spacenews.com/",
+                url = "https://finance.yahoo.com/quote/RKLB/",
                 relatedSymbol = "RKLB",
                 symbolChangePercent = -1.85
             ),
@@ -142,14 +142,35 @@ class MarketDataEngine {
                 source = "Yahoo Finance",
                 publishedAgo = "8h ago",
                 title = "Hyperscaler AI Capex Cycle Continues to Drive Next-Gen GPU Rack Deployments",
-                url = "https://finance.yahoo.com/",
+                url = "https://finance.yahoo.com/quote/NVDA/",
                 relatedSymbol = "NVDA",
                 symbolChangePercent = 2.45
             )
         )
 
-        if (activeSymbols.isEmpty()) return allNews
-        val filtered = allNews.filter { it.relatedSymbol in activeSymbols }
-        return filtered.ifEmpty { allNews }
+        if (activeSymbols.isEmpty()) return baseNews
+
+        val matched = baseNews.filter { it.relatedSymbol in activeSymbols }.toMutableList()
+
+        // Generate a live news card for any custom ticker the user added that isn't in baseNews
+        activeSymbols.forEach { symbol ->
+            if (matched.none { it.relatedSymbol == symbol }) {
+                val quote = getQuote(symbol)
+                matched.add(
+                    0,
+                    NewsArticleUiModel(
+                        id = "news_${symbol.lowercase()}",
+                        source = "MarketWatch",
+                        publishedAgo = "1h ago",
+                        title = "$symbol Institutional Volume & Technical Momentum Analysis",
+                        url = "https://finance.yahoo.com/quote/$symbol/",
+                        relatedSymbol = symbol,
+                        symbolChangePercent = quote.dayChangePercent
+                    )
+                )
+            }
+        }
+
+        return matched
     }
 }

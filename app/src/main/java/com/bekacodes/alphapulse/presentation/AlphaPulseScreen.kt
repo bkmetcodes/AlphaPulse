@@ -290,6 +290,22 @@ fun AlphaPulseScreen(
             )
         }
     }
+
+    // Full-Screen In-App News Article WebView Overlay
+    AnimatedVisibility(
+        visible = uiState.activeArticleWebView != null,
+        enter = androidx.compose.animation.slideInVertically(initialOffsetY = { it / 4 }) +
+                androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.slideOutVertically(targetOffsetY = { it / 4 }) +
+                androidx.compose.animation.fadeOut()
+    ) {
+        uiState.activeArticleWebView?.let { article ->
+            NewsArticleWebViewScreen(
+                article = article,
+                onClose = { onIntent(AlphaPulseIntent.OpenNewsArticle(null)) }
+            )
+        }
+    }
 }
 
 fun formatCurrency(value: Double): String =
