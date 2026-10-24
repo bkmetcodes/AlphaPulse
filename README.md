@@ -7,6 +7,9 @@ A modern Android stock portfolio manager and market tracker inspired by **Google
   <img src="https://github.com/user-attachments/assets/YOUR-GIF-ID-HERE" alt="AlphaPulse Demo" width="320"/>
 </p>
 
+
+https://github.com/user-attachments/assets/891b6c08-9eea-4531-8053-beb99f3a240b
+
 ---
 
 ## ✨ Key Engineering Highlights
