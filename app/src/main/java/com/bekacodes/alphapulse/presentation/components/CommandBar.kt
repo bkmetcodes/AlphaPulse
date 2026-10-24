@@ -21,6 +21,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -77,7 +79,11 @@ fun CommandBar(
                     singleLine = true,
                     textStyle = TextStyle(color = TextPrimary, fontSize = 13.sp),
                     cursorBrush = SolidColor(Primary),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            contentDescription = "AI natural language command input"
+                        }
                 )
             }
 
@@ -86,7 +92,10 @@ fun CommandBar(
                     .size(42.dp)
                     .clip(CircleShape)
                     .background(if (inputText.isNotBlank() && !isProcessing) Primary else Border)
-                    .clickable(enabled = inputText.isNotBlank() && !isProcessing, onClick = onSend),
+                    .clickable(enabled = inputText.isNotBlank() && !isProcessing, onClick = onSend)
+                    .semantics {
+                        contentDescription = "Submit AI command"
+                    },
                 contentAlignment = Alignment.Center
             ) {
                 Text("↑", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)

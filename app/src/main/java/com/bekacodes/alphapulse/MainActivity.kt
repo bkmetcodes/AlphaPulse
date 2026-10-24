@@ -8,16 +8,14 @@ import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.bekacodes.alphapulse.data.local.AlphaPulseDatabase
 import com.bekacodes.alphapulse.presentation.AlphaPulseScreen
 import com.bekacodes.alphapulse.presentation.AlphaPulseViewModel
+import dagger.hilt.android.AndroidEntryPoint
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    private val database by lazy { AlphaPulseDatabase.getInstance(applicationContext) }
-    private val viewModel: AlphaPulseViewModel by viewModels {
-        AlphaPulseViewModel.provideFactory(database.dao())
-    }
+    private val viewModel: AlphaPulseViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

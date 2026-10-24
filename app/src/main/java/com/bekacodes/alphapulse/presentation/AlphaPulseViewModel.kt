@@ -1,14 +1,13 @@
 package com.bekacodes.alphapulse.presentation
 
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.bekacodes.alphapulse.data.local.AlphaPulseDao
 import com.bekacodes.alphapulse.data.local.PortfolioEntity
 import com.bekacodes.alphapulse.data.local.WatchlistEntity
 import com.bekacodes.alphapulse.data.market.MarketDataEngine
 import com.bekacodes.alphapulse.domain.ParsedPortfolioCommand
 import com.bekacodes.alphapulse.domain.PortfolioAiAgent
+import com.bekacodes.alphapulse.domain.repository.PortfolioRepository
 import com.bekacodes.alphapulse.presentation.models.AlphaPulseIntent
 import com.bekacodes.alphapulse.presentation.models.AlphaPulseUiState
 import com.bekacodes.alphapulse.presentation.models.HoldingsTab
@@ -16,6 +15,7 @@ import com.bekacodes.alphapulse.presentation.models.PortfolioTabUiModel
 import com.bekacodes.alphapulse.presentation.models.PositionUiModel
 import com.bekacodes.alphapulse.presentation.models.Timeframe
 import com.bekacodes.alphapulse.presentation.models.WatchlistItemUiModel
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,11 +23,13 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
+import javax.inject.Inject
 
-class AlphaPulseViewModel(
-    private val dao: AlphaPulseDao,
-    private val marketEngine: MarketDataEngine = MarketDataEngine(),
-    private val aiAgent: PortfolioAiAgent = PortfolioAiAgent()
+@HiltViewModel
+class AlphaPulseViewModel @Inject constructor(
+    private val repository: PortfolioRepository,
+    private val marketEngine: MarketDataEngine,
+    private val aiAgent: PortfolioAiAgent
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AlphaPulseUiState())
@@ -41,12 +43,11 @@ class AlphaPulseViewModel(
             ensureDefaultPortfoliosExist()
         }
 
-        // Reactive pipeline combining Room SQLite tables + active portfolio filter + selected timeframe
         viewModelScope.launch {
             combine(
-                dao.observePortfolios(),
-                dao.observeAllPositions(),
-                dao.observeWatchlist(),
+                repository.observePortfolios(),
+                repository.observeAllPositions(),
+                repository.observeWatchlist(),
                 selectedPortfolioIdFlow,
                 selectedTimeframeFlow
             ) { portfolioEntities, allPositions, watchlistEntities, selectedPortfolioId, timeframe ->
@@ -54,7 +55,6 @@ class AlphaPulseViewModel(
                 val portfolioTabs = listOf(PortfolioTabUiModel("all", "All Holdings")) +
                     portfolioEntities.map { PortfolioTabUiModel(it.id, it.name) }
 
-                // Filter positions by selected portfolio (or aggregate by symbol if "All Holdings" is selected)
                 val filteredEntities = if (selectedPortfolioId == "all") {
                     allPositions
                         .groupBy { it.symbol.uppercase() }
@@ -157,88 +157,78 @@ class AlphaPulseViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessingAiCommand = true) }
 
-            when (val parsed = aiAgent.parseCommand(rawCommand)) {
-                is ParsedPortfolioCommand.AddPosition -> {
-                    // Add to currently selected portfolio (or first user portfolio if on "All Holdings")
-                    val currentSelected = selectedPortfolioIdFlow.value
-                    val targetPortfolioId = if (currentSelected == "all") {
-                        dao.getPortfoliosSnapshot().firstOrNull()?.id ?: "semis"
-                    } else {
-                        currentSelected
+            val parsedCommand = aiAgent.parseCommand(rawCommand)
+            val summaries = mutableListOf<String>()
+
+            suspend fun processCmd(cmd: ParsedPortfolioCommand) {
+                when (cmd) {
+                    is ParsedPortfolioCommand.AddPosition -> {
+                        val currentSelected = selectedPortfolioIdFlow.value
+                        val targetPortfolioId = if (cmd.targetPortfolioName != null) {
+                            val existing = repository.getPortfoliosSnapshot().firstOrNull {
+                                it.name.equals(cmd.targetPortfolioName, ignoreCase = true)
+                            }
+                            existing?.id ?: run {
+                                val newId = "folio_${UUID.randomUUID().toString().take(6)}"
+                                repository.insertPortfolio(PortfolioEntity(id = newId, name = cmd.targetPortfolioName))
+                                selectedPortfolioIdFlow.value = newId
+                                newId
+                            }
+                        } else if (currentSelected == "all") {
+                            repository.getPortfoliosSnapshot().firstOrNull()?.id ?: "semis"
+                        } else {
+                            currentSelected
+                        }
+
+                        val updated = repository.upsertPositionWithWeightedAvg(
+                            portfolioId = targetPortfolioId,
+                            symbol = cmd.symbol,
+                            addedShares = cmd.shares,
+                            purchasePrice = cmd.avgCost
+                        )
+                        summaries.add("Added ${cmd.shares} sh of ${updated.symbol} @ $${String.format("%,.2f", cmd.avgCost)}")
                     }
 
-                    val updated = dao.upsertPositionWithWeightedAvg(
-                        portfolioId = targetPortfolioId,
-                        symbol = parsed.symbol,
-                        addedShares = parsed.shares,
-                        purchasePrice = parsed.avgCost
-                    )
+                    is ParsedPortfolioCommand.RemovePosition -> {
+                        val deleted = repository.deletePosition(selectedPortfolioIdFlow.value, cmd.symbol)
+                        if (deleted > 0) summaries.add("Removed ${cmd.symbol}") else summaries.add("${cmd.symbol} not found")
+                    }
 
-                    _uiState.update {
-                        it.copy(
-                            commandInput = "",
-                            isProcessingAiCommand = false,
-                            selectedTab = HoldingsTab.POSITIONS,
-                            aiStatusBanner = "Added ${parsed.shares} sh of ${updated.symbol} @ $${String.format("%,.2f", parsed.avgCost)} (Avg $${String.format("%,.2f", updated.avgCost)})"
-                        )
+                    is ParsedPortfolioCommand.AddToWatchlist -> {
+                        repository.insertWatchlistTicker(WatchlistEntity(symbol = cmd.symbol))
+                        summaries.add("Added ${cmd.symbol} to Watchlist")
+                    }
+
+                    is ParsedPortfolioCommand.RemoveFromWatchlist -> {
+                        repository.removeWatchlistTicker(cmd.symbol)
+                        summaries.add("Removed ${cmd.symbol} from Watchlist")
+                    }
+
+                    is ParsedPortfolioCommand.CreatePortfolio -> {
+                        val id = "folio_${UUID.randomUUID().toString().take(6)}"
+                        repository.insertPortfolio(PortfolioEntity(id = id, name = cmd.name))
+                        selectedPortfolioIdFlow.value = id
+                        summaries.add("Created portfolio '${cmd.name}'")
+                    }
+
+                    is ParsedPortfolioCommand.Multiple -> {
+                        cmd.commands.forEach { sub -> processCmd(sub) }
+                    }
+
+                    is ParsedPortfolioCommand.Unrecognized -> {
+                        summaries.add(cmd.hint)
                     }
                 }
+            }
 
-                is ParsedPortfolioCommand.RemovePosition -> {
-                    val deleted = dao.deletePosition(selectedPortfolioIdFlow.value, parsed.symbol)
-                    _uiState.update {
-                        it.copy(
-                            commandInput = "",
-                            isProcessingAiCommand = false,
-                            aiStatusBanner = if (deleted > 0) "Removed ${parsed.symbol} from portfolio" else "${parsed.symbol} not found in current portfolio"
-                        )
-                    }
-                }
+            processCmd(parsedCommand)
 
-                is ParsedPortfolioCommand.AddToWatchlist -> {
-                    dao.insertWatchlistTicker(WatchlistEntity(symbol = parsed.symbol))
-                    _uiState.update {
-                        it.copy(
-                            commandInput = "",
-                            isProcessingAiCommand = false,
-                            selectedTab = HoldingsTab.WATCHLIST,
-                            aiStatusBanner = "Added ${parsed.symbol} to ★ Watchlist"
-                        )
-                    }
-                }
-
-                is ParsedPortfolioCommand.RemoveFromWatchlist -> {
-                    dao.removeWatchlistTicker(parsed.symbol)
-                    _uiState.update {
-                        it.copy(
-                            commandInput = "",
-                            isProcessingAiCommand = false,
-                            aiStatusBanner = "Removed ${parsed.symbol} from ★ Watchlist"
-                        )
-                    }
-                }
-
-                is ParsedPortfolioCommand.CreatePortfolio -> {
-                    val id = "folio_${UUID.randomUUID().toString().take(6)}"
-                    dao.insertPortfolio(PortfolioEntity(id = id, name = parsed.name))
-                    selectedPortfolioIdFlow.value = id
-                    _uiState.update {
-                        it.copy(
-                            commandInput = "",
-                            isProcessingAiCommand = false,
-                            aiStatusBanner = "Created and switched to portfolio '${parsed.name}'"
-                        )
-                    }
-                }
-
-                is ParsedPortfolioCommand.Unrecognized -> {
-                    _uiState.update {
-                        it.copy(
-                            isProcessingAiCommand = false,
-                            aiStatusBanner = parsed.hint
-                        )
-                    }
-                }
+            _uiState.update {
+                it.copy(
+                    commandInput = "",
+                    isProcessingAiCommand = false,
+                    aiStatusBanner = summaries.joinToString(" • ")
+                )
             }
         }
     }
@@ -246,7 +236,7 @@ class AlphaPulseViewModel(
     private fun createPortfolio(name: String) {
         viewModelScope.launch {
             val id = "folio_${UUID.randomUUID().toString().take(6)}"
-            dao.insertPortfolio(PortfolioEntity(id = id, name = name))
+            repository.insertPortfolio(PortfolioEntity(id = id, name = name))
             selectedPortfolioIdFlow.value = id
             _uiState.update {
                 it.copy(
@@ -259,19 +249,9 @@ class AlphaPulseViewModel(
     }
 
     private suspend fun ensureDefaultPortfoliosExist() {
-        if (dao.getPortfoliosSnapshot().isEmpty()) {
-            dao.insertPortfolio(PortfolioEntity(id = "semis", name = "Semis & AI", createdAt = 1L))
-            dao.insertPortfolio(PortfolioEntity(id = "growth", name = "Growth", createdAt = 2L))
+        if (repository.getPortfoliosSnapshot().isEmpty()) {
+            repository.insertPortfolio(PortfolioEntity(id = "semis", name = "Semis & AI", createdAt = 1L))
+            repository.insertPortfolio(PortfolioEntity(id = "growth", name = "Growth", createdAt = 2L))
         }
-    }
-
-    companion object {
-        fun provideFactory(dao: AlphaPulseDao): ViewModelProvider.Factory =
-            object : ViewModelProvider.Factory {
-                @Suppress("UNCHECKED_CAST")
-                override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return AlphaPulseViewModel(dao) as T
-                }
-            }
     }
 }

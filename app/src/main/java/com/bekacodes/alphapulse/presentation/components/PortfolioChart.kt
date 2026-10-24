@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -24,6 +25,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,7 +41,8 @@ import com.bekacodes.alphapulse.ui.theme.TextSecondary
 import kotlin.math.roundToInt
 
 /**
- * Interactive Google Finance-style Area Chart with horizontal drag/tap scrubbing and haptic ticks.
+ * Interactive Google Finance-style Area Chart with horizontal drag/tap scrubbing,
+ * zero-allocation cached Path objects across draw passes, and haptic feedback ticks.
  */
 @Composable
 fun PortfolioChart(
@@ -53,10 +57,17 @@ fun PortfolioChart(
     val activeColor = if (isPositive) Positive else Negative
     val gradientColor = if (isPositive) Color(0x6610B981) else Color(0x66F43F5E)
 
+    // Reusable cached Path objects to prevent GC allocation churn on continuous draw passes
+    val cachedLinePath = remember { Path() }
+    val cachedAreaPath = remember { Path() }
+
     Box(modifier) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                .semantics {
+                    contentDescription = "Interactive portfolio chart. Drag across chart to scrub balance values."
+                }
                 .pointerInput(points) {
                     if (points.size < 2) return@pointerInput
                     detectTapGestures(
@@ -111,22 +122,21 @@ fun PortfolioChart(
                 return chartBottom - (normalized * chartHeight)
             }
 
-            val path = Path()
+            cachedLinePath.reset()
             points.forEachIndexed { index, pt ->
                 val x = index * size.width / points.lastIndex
                 val y = valueToY(pt.value)
-                if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                if (index == 0) cachedLinePath.moveTo(x, y) else cachedLinePath.lineTo(x, y)
             }
 
-            val area = Path().apply {
-                addPath(path)
-                lineTo(size.width, chartBottom)
-                lineTo(0f, chartBottom)
-                close()
-            }
+            cachedAreaPath.reset()
+            cachedAreaPath.addPath(cachedLinePath)
+            cachedAreaPath.lineTo(size.width, chartBottom)
+            cachedAreaPath.lineTo(0f, chartBottom)
+            cachedAreaPath.close()
 
             drawPath(
-                path = area,
+                path = cachedAreaPath,
                 brush = Brush.verticalGradient(
                     listOf(gradientColor, Color.Transparent),
                     chartTop,
@@ -134,7 +144,7 @@ fun PortfolioChart(
                 )
             )
             drawPath(
-                path = path,
+                path = cachedLinePath,
                 color = activeColor,
                 style = Stroke(2.2.dp.toPx(), cap = StrokeCap.Round)
             )
